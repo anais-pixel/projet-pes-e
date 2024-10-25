@@ -1,0 +1,119 @@
+ // Bibliothèques utilisées 
+ 
+#include "Arduino.h" 
+#include "PubSubClient.h" 
+#include "WiFi.h" 
+#include "esp_wpa2.h" 
+#include "HX711.h" 
+ 
+// Déclaration - Grandeur physique étudiée 
+float masse; // Déclare la vriable masse
+ 
+// Déclaration du capteur HX711 
+ 
+const int LOADCELL_DOUT_PIN = 4; // Déclare la broche 4 comme DOUT
+const int LOADCELL_SCK_PIN = 5; // Déclare la broche 5 comme SCK
+const int Calibration_Weight = 400; // Indique que la masse de calibration est de 400 g
+HX711 scale; // Initialise le capteur
+ 
+// Paramètres MQTT Broker  
+ 
+const char *mqtt_broker = "139.124.208.196"; // Identifiant du broker (Adresse IP) 
+const char *topic = "balance"; // Nom du topic sur lequel les données seront envoyés.  
+const char *mqtt_username = ""; // Identifiant dans le cas d'une liaison sécurisée 
+const char *mqtt_password = ""; // Mdp dans le cas d'une liaison sécurisée 
+const int mqtt_port = 1883; // Port : 1883 dans le cas d'une liaison non sécurisée et 8883 dans le cas d'une liaison cryptée 
+ 
+WiFiClient espClient; // Permet de créer une connexion TCP/IP en Wifi
+PubSubClient client(espClient); // Gére la connexion MQTT
+ 
+// Paramètres EDUROAM  
+#define EAP_IDENTITY "prenom.nom@etu.univ-amu.fr" // Donner l'identifiant
+#define EAP_PASSWORD "mot de passe"  // Donner le mot de passe
+#define EAP_USERNAME "anais.bruno@etu.univ-amu.fr" // Donner le nom d'utilisateur (= identifiant)
+const char* ssid = "eduroam"; // eduroam SSID 
+ 
+// Fonction réception du message MQTT  
+void callback(char *topic, byte *payload, unsigned int length) {  
+  Serial.print("Le message a été envoyé sur le topic : "); // Affiche le message "Le message a été envoyé sur le topic : " dans le moniteur série
+  Serial.println(topic); // Affiche la donnée du topic dans le moniteur série et fini avec un saut de ligne
+  Serial.print("Message:");  // Affiche le message "Message:" dans le moniteur série
+  for (int i = 0; i < length; i++) {  
+    Serial.print((char) payload[i]);  
+  }  
+  Serial.println();  
+  Serial.println("-----------------------");  
+} 
+ 
+// Initialisation 
+ 
+void setup() {  
+  Serial.begin(115200); // Initialise la vitesse de communication du moniteur série
+ 
+// Connexion au réseau EDUROAM  
+ 
+  WiFi.disconnect(true); // Indique la déconnexion du Wifi
+  WiFi.begin(ssid, WPA2_AUTH_PEAP, EAP_IDENTITY, EAP_USERNAME, EAP_PASSWORD); // Permet de reconnecter le Wifi
+   
+  while (WiFi.status() != WL_CONNECTED) { // Tant que le Wifi n'est pas connecté, suivre le programme
+    delay(500); 
+    Serial.print(F(".")); 
+  } 
+ 
+  Serial.println(""); 
+  Serial.println(F("L'ESP32 est connecté au WiFi !")); 
+   
+// Connexion au broker MQTT   
+   
+  client.setServer(mqtt_broker, mqtt_port); // Configure un client MQTT
+  client.setCallback(callback); // Définit une fonction de rappel quand un client reçoit un message
+ 
+  while (!client.connected()) {  // Tant que le client est connecté, suivre le programme
+    String client_id = "esp32-client-"; // Crée une chaîne de caractères associées à l'identifiant du client
+    client_id += String(WiFi.macAddress()); // Ajoute l'adresse MAC à la chaîne de caractères
+    Serial.printf("La chaîne de mesure %s se connecte au broker MQTT", client_id.c_str()); // Affiche dans le moniteur que la chaîne de mesure se connecte au broker MQTT
+  
+    if (client.connect(client_id.c_str(), mqtt_username, mqtt_password)) { // Si le client se connecte avec son identifiant et son mot de passe, suivre le code 
+      Serial.println("La chaîne de mesure est connectée au broker.");  
+    } else {  
+      Serial.print("La chaîne de mesure n'a pas réussi à se connecter ... ");  
+      Serial.print(client.state());  
+      delay(2000);  
+    }  
+  }  
+
+// Calibration et Tarage
+scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN); // Initialise la connexion entre le microcontrôleur et le module HX711
+scale.set_scale(); // Configure une échelle de mesure
+scale.tare(); // Remet l'échelle à zéro
+Serial.println("Calibration"); // Affiche le message "Calibration" dans le moniteur série et fini avec un saut de ligne
+Serial.println("Put a known weight on the scale"); // Affiche le message "Put a known weight on the scale" dans le moniteur série et fini avec un saut de ligne
+delay(5000); 
+float x = scale.get_units(10); // Fait une moyenne de 10 mesures et renvoie la masse mesurée
+x = x / Calibration_Weight; // Ajuste la valeur de la masse en fonction de la masse de calibration
+scale.set_scale(x); // Ajuste l'échelle après calibration
+Serial.println("Calibration finished..."); 
+delay(3000); 
+} 
+ 
+// Traitement  
+ 
+void loop(){ 
+ 
+masse = scale.get_units(10); // Stocke dans la variable masse la moyenne de 10 mesures de masse
+  client.publish(topic, String(masse).c_str()); // Publication de la température sur le topic (envoi d'une chaîne de caractères) 
+  client.subscribe(topic); // S'abonne au topic pour recevoir des messages 
+  client.loop(); // Gère les messages MQTT (pour lire la valeur de la température sur le moniteur série de platformIO) 
+  delay(5000); // Pause de 5 secondes entre chaque envoi 
+ 
+if (scale.is_ready()) { // Si le module est prêt, suivre le programme
+float reading = scale.get_units(10); // Stocke dans la variable reading la moyenne de 1O mesures de masse
+Serial.print("HX711 reading: "); // Affiche le message "HX711 reading :" dans le moniteur série 
+Serial.println(reading); // Affiche la masse mesurée dans le moniteur et fini par un saut de ligne
+} else { // Sinon
+Serial.println("HX711 not found."); // Affiche le message "HX711 not found" dans le moniteur série et fini par un saut de ligne
+} 
+delay(1000); 
+} 
+  
+ 
